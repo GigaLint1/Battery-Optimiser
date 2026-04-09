@@ -1,0 +1,13 @@
+# Optimisation
+cvxpy
+
+# Core data
+numpy
+pandas
+matplotlib 
+
+# Testing
+pytest
+
+# Data access (for real prices later)
+gridstatus
