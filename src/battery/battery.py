@@ -79,9 +79,9 @@ class BatteryConfig:
         """
         Combined round-trip efficiency.
 
-        If you charge 1 MWh in, you get eta_charge MWh stored.
-        When you discharge, you get eta_discharge of what's stored out.
-        Round-trip: eta_charge * eta_discharge.
+        If you charge 1 MWh in, you get rte_charge MWh stored.
+        When you discharge, you get rte_discharge of what's stored out.
+        Round-trip: rte_charge * rte_discharge.
 
         Example: 0.93 * 0.95 = 0.8835 → ~12% losses per cycle.
         This is why you need a price spread of at least degradation_cost /
@@ -96,8 +96,8 @@ class BatteryConfig:
 
         Derivation:
         - Buy 1 MWh at price p_low → pay p_low
-        - Store: get eta_charge MWh in battery
-        - Discharge: get eta_charge * eta_discharge MWh out = RTE MWh
+        - Store: get rte_charge MWh in battery
+        - Discharge: get rte_charge * rte_discharge MWh out = RTE MWh
         - Sell at p_high → receive p_high * RTE
         - Pay degradation: degradation_cost * (1 + RTE) for charge + discharge throughput
 
