@@ -158,10 +158,10 @@ class LPOptimizer:
             c >= 0,
             d <= bat.power_mw,
             d >= 0,
-            
+
             # Capacity limits
             s >= bat.soc_min_mwh,
-            s <= bat.soc_max_mwh
+            s <= bat.soc_max_mwh,
 
         ]
 

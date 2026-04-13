@@ -71,17 +71,43 @@ def fetch_caiso_prices(
         import gridstatus
         iso = gridstatus.CAISO()
 
-        # gridstatus returns a DataFrame; we want just the LMP column
-        # as a Series indexed by interval_start
-        df = iso.get_lmp(
-            start=start,
-            end=end,
-            market="DAY_AHEAD_HOURLY",
-            locations=[node],
-        )
+        # Fetch in monthly chunks to avoid API gaps on large ranges
+        chunks = []
+        chunk_start = pd.Timestamp(start)
+        chunk_end = pd.Timestamp(end)
 
+        while chunk_start < chunk_end:
+            next_month = (chunk_start + pd.offsets.MonthBegin(1)).normalize()
+            this_end = min(next_month, chunk_end)
+            print(f"  Fetching CAISO {chunk_start.date()} to {this_end.date()}...")
+
+            df = iso.get_lmp(
+                start=str(chunk_start.date()),
+                end=str(this_end.date()),
+                market="DAY_AHEAD_HOURLY",
+                locations=[node],
+            )
+            chunks.append(df)
+            chunk_start = this_end
+
+        df = pd.concat(chunks, ignore_index=True)
         df.set_index("Time", inplace=True)
         prices = df["LMP"].resample('h').mean()
+
+        # Strip timezone so reindex matches
+        prices.index = prices.index.tz_localize(None)
+
+        # Drop duplicate timestamps (DST transitions cause repeated hours)
+        prices = prices[~prices.index.duplicated(keep='first')]
+
+        # Reindex to a complete hourly grid to expose any gaps
+        full_index = pd.date_range(start, end, freq='h', inclusive='left')
+        prices = prices.reindex(full_index)
+
+        n_missing = prices.isna().sum()
+        if n_missing > 0:
+            print(f"  Warning: {n_missing} hours missing out of {len(full_index)}")
+
         prices.to_pickle(cache_path)
         return prices
 
@@ -127,7 +153,7 @@ def fetch_ercot_prices(
         iso = gridstatus.Ercot()
 
         df = iso.get_lmp(
-            start=start,
+            date=start,
             end=end,
             market="DAY_AHEAD_HOURLY",
             locations=[hub],
@@ -140,43 +166,6 @@ def fetch_ercot_prices(
 
     except ImportError:
         raise ImportError("Install gridstatus: pip install gridstatus")
-
-
-def load_sample_prices(market: str = "ercot") -> pd.Series:
-    """
-    Load a small sample of synthetic prices for testing before real data is set up.
-
-    This lets you test the LP formulation immediately without waiting
-    for API access. The synthetic prices have a realistic daily shape:
-    low overnight, high morning and evening peaks, very high midday 
-    (for testing negative price behavior).
-
-    Args:
-        market: "ercot" or "caiso" — affects price scale/volatility.
-
-    Returns:
-        pd.Series of 24 hourly prices ($/MWh).
-    """
-    # A stylized "duck curve" day in Texas (summer)
-    # Note: this includes a brief negative price period at midday (solar glut)
-    if market == "ercot":
-        prices = np.array([
-            25, 22, 20, 18, 17, 18,   # Hours 0-5 (overnight, low load)
-            35, 55, 70, 65, 45, -5,   # Hours 6-11 (morning ramp, solar starts)
-            -10, -8, 5, 20, 45, 85,   # Hours 12-17 (midday glut, evening ramp)
-            120, 150, 95, 65, 45, 30, # Hours 18-23 (peak, then decline)
-        ], dtype=float)
-    else:  # caiso
-        prices = np.array([
-            30, 27, 25, 23, 22, 24,
-            40, 60, 75, 70, 50, 10,
-            -15, -12, 5, 25, 50, 90,
-            130, 160, 100, 70, 50, 35,
-        ], dtype=float)
-
-    index = pd.date_range("2025-01-15 00:00", periods=24, freq="h")
-    return pd.Series(prices, index=index, name=f"{market}_prices")
-
 
 def compute_price_statistics(prices: pd.Series) -> dict:
     """
@@ -201,3 +190,44 @@ def compute_price_statistics(prices: pd.Series) -> dict:
         'daily_spread_mean': (daily.max() - daily.min()).mean(),
         'daily_spread_p90': (daily.max() - daily.min()).quantile(0.9),
     }
+
+import glob
+import os
+
+def process_ercot_data(folder_path: str, **read_csv_kwargs) -> pd.DataFrame:
+    """
+    Load all CSVs in a folder into a single combined DataFrame.
+
+    Args:
+        folder_path: Path to folder containing CSVs
+        **read_csv_kwargs: Any keyword args to pass to pd.read_csv
+                           (e.g. parse_dates=['date'], dtype={'col': str})
+    
+    Returns:
+        Combined DataFrame, sorted by any date column if present
+    """
+
+    # Find CSV files
+    pattern = os.path.join(folder_path, "*.csv")
+    files = sorted(glob.glob(pattern))
+
+    if not files:
+        raise FileNotFoundError(f"No CSV files found in: {folder_path}")
+
+    # Load each into a list (memory-efficient accumulation)
+    frames = []
+    for file in files:
+        df = pd.read_csv(file, **read_csv_kwargs)
+        df["_source_file"] = os.path.basename(file)  # optional: track origin
+        frames.append(df)
+
+    # Concatenate once
+    combined = pd.concat(frames, ignore_index=True)
+
+    combined = combined[combined['BusName'] == 'ADICKS_345B']
+
+    combined["Date"] = pd.to_datetime(combined["DeliveryDate"]) + pd.to_timedelta(combined["HourEnding"].str.split(":").str[0].astype(int) - 1, unit='h')
+    combined.drop(combined.columns[[0,1,2,4,5]],inplace=True, axis=1)
+    combined.set_index("Date", inplace=True)
+    
+    return combined
