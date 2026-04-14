@@ -231,3 +231,55 @@ def process_ercot_data(folder_path: str, **read_csv_kwargs) -> pd.DataFrame:
     combined.set_index("Date", inplace=True)
     
     return combined
+
+def monthly_price_analysis(prices: pd.Series, name: str) -> pd.DataFrame:
+    """Monthly breakdown: extremes, spreads, duck-curve shape, volatility."""
+    monthly = prices.groupby(prices.index.to_period('M'))
+
+    rows = []
+    for period, grp in monthly:
+        idx_min, idx_max = grp.idxmin(), grp.idxmax()
+        daily_spreads = grp.resample('D').apply(lambda d: d.max() - d.min())
+
+        # Hourly profile for duck-curve metrics
+        hourly_avg = grp.groupby(grp.index.hour).mean()
+        belly_price = hourly_avg.loc[11:15].mean()        # solar midday dip
+        neck_price  = hourly_avg.loc[17:21].mean()         # evening ramp peak
+        ramp_mag    = neck_price - belly_price              # duck-curve ramp
+
+        rows.append({
+            'month':            str(period),
+            'min_$/MWh':        grp.min(),
+            'min_at':           idx_min.strftime('%d %H:%M'),
+            'max_$/MWh':        grp.max(),
+            'max_at':           idx_max.strftime('%d %H:%M'),
+            'spread':           grp.max() - grp.min(),
+            'mean':             grp.mean(),
+            'std':              grp.std(),
+            'cv_%':             grp.std() / grp.mean() * 100 if grp.mean() != 0 else np.nan,
+            'avg_daily_spread': daily_spreads.mean(),
+            'p90_daily_spread': daily_spreads.quantile(0.9),
+            'belly_11-15':      belly_price,
+            'neck_17-21':       neck_price,
+            'duck_ramp':        ramp_mag,
+            'pct_negative':     (grp < 0).mean() * 100,
+            'pct_>100':         (grp > 100).mean() * 100,
+            'hours':            len(grp),
+        })
+
+    df = pd.DataFrame(rows).set_index('month')
+
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', 200)
+    pd.set_option('display.float_format', '{:.1f}'.format)
+    print(f"\n{'='*80}")
+    print(f"  {name} — Monthly Price Analysis")
+    print(f"{'='*80}")
+    print(df.to_string())
+
+    print(f"\n  Full period: {prices.index.min()} → {prices.index.max()}  "
+          f"({len(prices):,} hours, {prices.isna().sum()} NaN)")
+    print(f"  Duck-curve ramp (neck-belly) avg: ${df['duck_ramp'].mean():.1f}/MWh")
+    print(f"  Most volatile month:  {df['std'].idxmax()} (std=${df['std'].max():.1f})")
+    print(f"  Deepest duck month:   {df['duck_ramp'].idxmax()} (ramp=${df['duck_ramp'].max():.1f})")
+    return df
