@@ -194,7 +194,7 @@ def compute_price_statistics(prices: pd.Series) -> dict:
 import glob
 import os
 
-def process_ercot_data(folder_path: str, **read_csv_kwargs) -> pd.DataFrame:
+def process_ercot_data(folder_path: str, hub: str = "ADICKS_345B", use_cache: bool = True, **read_csv_kwargs) -> pd.DataFrame:
     """
     Load all CSVs in a folder into a single combined DataFrame.
 
@@ -207,6 +207,12 @@ def process_ercot_data(folder_path: str, **read_csv_kwargs) -> pd.DataFrame:
         Combined DataFrame, sorted by any date column if present
     """
 
+    cache_path = PROCESSED_DIR / f"ercot_{hub}.parquet"
+
+    if use_cache and cache_path.exists():
+        print(f"Loading ERCOT data from cache: {cache_path}")
+        return pd.read_pickle(cache_path)
+    
     # Find CSV files
     pattern = os.path.join(folder_path, "*.csv")
     files = sorted(glob.glob(pattern))
@@ -224,13 +230,16 @@ def process_ercot_data(folder_path: str, **read_csv_kwargs) -> pd.DataFrame:
     # Concatenate once
     combined = pd.concat(frames, ignore_index=True)
 
-    combined = combined[combined['BusName'] == 'ADICKS_345B']
+    combined = combined[combined['BusName'] == hub]
 
     combined["Date"] = pd.to_datetime(combined["DeliveryDate"]) + pd.to_timedelta(combined["HourEnding"].str.split(":").str[0].astype(int) - 1, unit='h')
     combined.drop(combined.columns[[0,1,2,4,5]],inplace=True, axis=1)
     combined.set_index("Date", inplace=True)
-    
-    return combined
+
+    prices = combined["LMP"]
+    prices.to_pickle(cache_path)
+
+    return prices
 
 def monthly_price_analysis(prices: pd.Series, name: str) -> pd.DataFrame:
     """Monthly breakdown: extremes, spreads, duck-curve shape, volatility."""
